@@ -1,0 +1,362 @@
+{
+  "name": "RAG Conversationnel WhatsApp",
+  "nodes": [
+    {
+      "id": "webhookTrigger",
+      "name": "WhatsApp Message Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "parameters": {
+        "path": "whatsapp-rag",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "extractData",
+      "name": "Extract Message Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "parameters": {
+        "jsCode": "// Extraire les données du webhook Twilio WhatsApp\nconst from = $json.From || ''; // e.g. 'whatsapp:+221771234567'\nconst body = $json.Body || '';\nconst profileName = $json.ProfileName || '';\n\n// Nettoyer le numéro de téléphone\nconst phoneNumber = from.replace('whatsapp:', '');\n\n// Générer un session_id unique\nconst sessionId = `whatsapp_${phoneNumber.replace('+', '')}_${new Date().toISOString().split('T')[0]}`;\n\nreturn [{\n  json: {\n    phone: phoneNumber,\n    message: body.trim(),\n    profile_name: profileName,\n    session_id: sessionId,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "id": "checkPatientActive",
+      "name": "Vérifier Patient Actif",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/patients/check-active/",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "phone",
+              "value": "={{$json.phone}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ifPatientActive",
+      "name": "Si Patient Actif",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [700, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.is_active}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ragQuery",
+      "name": "RAG Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [900, 200],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/rag/query/",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "patient_phone",
+              "value": "={{$node['Extract Message Data'].json.phone}}"
+            },
+            {
+              "name": "query",
+              "value": "={{$node['Extract Message Data'].json.message}}"
+            },
+            {
+              "name": "session_id",
+              "value": "={{$node['Extract Message Data'].json.session_id}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sendRAGResponse",
+      "name": "Envoyer Réponse RAG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1100, 200],
+      "parameters": {
+        "url": "https://api.twilio.com/2010-04-01/Accounts/{{TWILIO_ACCOUNT_SID}}/Messages.json",
+        "method": "POST",
+        "authentication": "basicAuth",
+        "basicAuth": {
+          "user": "={{$credentials.twilioApi.user}}",
+          "password": "={{$credentials.twilioApi.password}}"
+        },
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "From",
+              "value": "whatsapp:+{{TWILIO_WHATSAPP_NUMBER}}"
+            },
+            {
+              "name": "To",
+              "value": "={{$node['Extract Message Data'].json.phone}}"
+            },
+            {
+              "name": "Body",
+              "value": "={{$node['RAG Query'].json.response}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "sendInactiveMessage",
+      "name": "Message Patient Inactif",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [900, 400],
+      "parameters": {
+        "url": "https://api.twilio.com/2010-04-01/Accounts/{{TWILIO_ACCOUNT_SID}}/Messages.json",
+        "method": "POST",
+        "authentication": "basicAuth",
+        "basicAuth": {
+          "user": "={{$credentials.twilioApi.user}}",
+          "password": "={{$credentials.twilioApi.password}}"
+        },
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "From",
+              "value": "whatsapp:+{{TWILIO_WHATSAPP_NUMBER}}"
+            },
+            {
+              "name": "To",
+              "value": "={{$node['Extract Message Data'].json.phone}}"
+            },
+            {
+              "name": "Body",
+              "value": "Votre espace MediRecord n'est pas encore activé. Veuillez contacter votre médecin pour l'activation."
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "logConversation",
+      "name": "Log Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1300, 200],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/conversations/log/",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "phone",
+              "value": "={{$node['Extract Message Data'].json.phone}}"
+            },
+            {
+              "name": "user_message",
+              "value": "={{$node['Extract Message Data'].json.message}}"
+            },
+            {
+              "name": "ai_response",
+              "value": "={{$node['RAG Query'].json.response}}"
+            },
+            {
+              "name": "session_id",
+              "value": "={{$node['Extract Message Data'].json.session_id}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "webhookResponse",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1500, 200],
+      "parameters": {
+        "responseBody": "={{JSON.stringify({\"status\": \"success\", \"message\": \"Message traité\"})}}",
+        "options": {
+          "responseHeaders": {
+            "responseHeaders": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "webhookTrigger": {
+      "main": [
+        [
+          {
+            "node": "extractData",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "extractData": {
+      "main": [
+        [
+          {
+            "node": "checkPatientActive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "checkPatientActive": {
+      "main": [
+        [
+          {
+            "node": "ifPatientActive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ifPatientActive": {
+      "main": [
+        [
+          {
+            "node": "ragQuery",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "sendInactiveMessage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ragQuery": {
+      "main": [
+        [
+          {
+            "node": "sendRAGResponse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sendRAGResponse": {
+      "main": [
+        [
+          {
+            "node": "logConversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "logConversation": {
+      "main": [
+        [
+          {
+            "node": "webhookResponse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sendInactiveMessage": {
+      "main": [
+        [
+          {
+            "node": "webhookResponse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "UTC"
+  }
+}

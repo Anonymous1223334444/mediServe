@@ -1,0 +1,12 @@
+djangorestframework
+djangorestframework-simplejwt
+drf-yasg
+django-celery-results
+celery
+redis
+twilio
+sentence-transformers
+faiss-cpu
+numpy
+h5py
+python-dotenv
