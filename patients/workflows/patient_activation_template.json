@@ -1,0 +1,210 @@
+{
+  "nodes": [
+    {
+      "id": "webhookTrigger1",
+      "name": "Webhook Trigger (Activate)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 100],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "activate-{{ACTIVATION_TOKEN}}",
+        "responseMode": "onReceived",
+        "responseData": "all",
+        "responseCode": 200,
+        "options": {}
+      }
+    },
+    {
+      "id": "generateMessage",
+      "name": "Generate Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [300, 100],
+      "parameters": {
+        "jsCode": "const { fullName, phone, activation_link } = $input.first().json;\n\n// Générer le message\nconst message = `📱 Nouveau patient enregistré!\\n\\nNom: ${fullName}\\nTéléphone: ${phone}\\nLien d'activation: ${activation_link}\\n\\nID de workflow: {{WORKFLOW_ID}}\\nHeure: ${new Date().toLocaleString()}`;\n\nreturn [\n  { \n    json: { \n      message: message,\n      fullName: fullName,\n      phone: phone,\n      timestamp: new Date().toISOString()\n    } \n  }\n];"
+      }
+    },
+    {
+      "id": "telegramSend",
+      "name": "Telegram Send",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [500, 100],
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "1409788527",
+        "text": "={{$json[\"message\"]}}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_notification": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-api-credentials",
+          "name": "Telegram API"
+        }
+      }
+    },
+    {
+      "id": "webhookTrigger2",
+      "name": "Webhook Trigger (Confirm)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "parameters": {
+        "path": "confirm-{{ACTIVATION_TOKEN}}",
+        "httpMethod": "POST"
+      }
+    },
+    {
+      "id": "checkConfirmation",
+      "name": "Check Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "parameters": {
+        "jsCode": "const expected = \"Je confirme l'accès à mon espace santé CARE.\";\nconst from = $input.first().json.From || \"\";\nconst msg = ($input.first().json.Body || \"\").trim();\n\nif (msg === expected && from) {\n  console.log(`✅ Confirmation valide de ${from}`);\n  return [{ json: { valid: true, telephone: from } }];\n} else {\n  console.log(`❌ Confirmation invalide ou incomplète de ${from}: \"${msg}\"`);\n  return [{ json: { valid: false, telephone: from } }];\n}"
+      }
+    },
+    {
+      "id": "ifConfirmed",
+      "name": "If Confirmed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json[\"valid\"]}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "markPatientActive",
+      "name": "Mark Patient Active",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [700, 250],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/patients/confirm/",
+        "method": "POST",
+        "authentication": "none",
+        "allowUnauthorizedCerts": false,
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "phone",
+              "value": "={{$json[\"telephone\"]}}"
+            },
+            {
+              "name": "valid",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json"
+        }
+      }
+    },
+    {
+      "id": "logFailure",
+      "name": "Log Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [700, 400],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/patients/log-failure/",
+        "method": "POST",
+        "authentication": "none",
+        "allowUnauthorizedCerts": false,
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "phone",
+              "value": "={{$json[\"telephone\"]}}"
+            },
+            {
+              "name": "reason",
+              "value": "\"Invalid confirmation text or missing sender.\""
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger (Activate)": {
+      "main": [
+        [
+          {
+            "node": "Generate Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Message": {
+      "main": [
+        [
+          {
+            "node": "Telegram Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger (Confirm)": {
+      "main": [
+        [
+          {
+            "node": "Check Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Confirmation": {
+      "main": [
+        [
+          {
+            "node": "If Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Confirmed": {
+      "main": [
+        [
+          {
+            "node": "Mark Patient Active",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
+

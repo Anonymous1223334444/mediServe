@@ -1,0 +1,473 @@
+{
+  "name": "Messages Diffusés WhatsApp",
+  "nodes": [
+    {
+      "id": "webhookTrigger",
+      "name": "Webhook Trigger - Messages Diffusés",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "parameters": {
+        "path": "broadcast-message",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "extractBroadcastData",
+      "name": "Extract Broadcast Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "parameters": {
+        "jsCode": "// Extraire les données du webhook Django\nconst messageId = $json.message_id;\nconst messageContent = $json.message_content;\nconst messageTitle = $json.message_title;\nconst targetPatients = $json.target_patients || [];\nconst category = $json.category || 'info';\nconst scheduledAt = $json.scheduled_at;\n\n// Valider les données\nif (!messageId || !messageContent || !targetPatients.length) {\n  throw new Error('Données manquantes: message_id, message_content et target_patients requis');\n}\n\n// Préparer les données pour le traitement\nreturn [{\n  json: {\n    message_id: messageId,\n    message_content: messageContent,\n    message_title: messageTitle,\n    category: category,\n    target_patients: targetPatients,\n    total_patients: targetPatients.length,\n    scheduled_at: scheduledAt,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "id": "logBroadcastStart",
+      "name": "Log Broadcast Start",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/messaging/broadcast/{{$json.message_id}}/log-start/",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "status",
+              "value": "sending"
+            },
+            {
+              "name": "total_recipients",
+              "value": "={{$json.total_patients}}"
+            },
+            {
+              "name": "started_at",
+              "value": "={{$json.timestamp}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "splitPatients",
+      "name": "Split Patients",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [700, 300],
+      "parameters": {
+        "operation": "splitOutItems",
+        "fieldToSplitOut": "target_patients"
+      }
+    },
+    {
+      "id": "addDelay",
+      "name": "Add Delay Between Messages",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "sendWhatsAppMessage",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1100, 300],
+      "parameters": {
+        "url": "https://api.twilio.com/2010-04-01/Accounts/{{TWILIO_ACCOUNT_SID}}/Messages.json",
+        "method": "POST",
+        "authentication": "basicAuth",
+        "basicAuth": {
+          "user": "={{$credentials.twilioApi.user}}",
+          "password": "={{$credentials.twilioApi.password}}"
+        },
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "From",
+              "value": "whatsapp:+{{TWILIO_WHATSAPP_NUMBER}}"
+            },
+            {
+              "name": "To",
+              "value": "whatsapp:={{$json.target_patients.phone}}"
+            },
+            {
+              "name": "Body",
+              "value": "📢 *{{$node['Extract Broadcast Data'].json.message_title}}*\n\n{{$node['Extract Broadcast Data'].json.message_content}}\n\n---\n_Message de votre équipe médicale MediRecord_"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "logDeliveryStatus",
+      "name": "Log Delivery Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1300, 300],
+      "parameters": {
+        "jsCode": "// Analyser la réponse Twilio\nconst response = $json;\nconst patient = $node['Split Patients'].json.target_patients;\nconst messageId = $node['Extract Broadcast Data'].json.message_id;\n\nlet deliveryStatus = 'failed';\nlet errorMessage = '';\n\nif (response.status === 201 || (response.body && response.body.sid)) {\n  deliveryStatus = 'sent';\n} else {\n  errorMessage = response.body ? JSON.stringify(response.body) : 'Erreur inconnue';\n}\n\nreturn [{\n  json: {\n    message_id: messageId,\n    patient_id: patient.id,\n    patient_phone: patient.phone,\n    patient_name: patient.full_name,\n    delivery_status: deliveryStatus,\n    error_message: errorMessage,\n    twilio_sid: response.body ? response.body.sid : null,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "id": "updateDeliveryStatus",
+      "name": "Update Delivery Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1500, 300],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/messaging/delivery/update/",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "message_id",
+              "value": "={{$json.message_id}}"
+            },
+            {
+              "name": "patient_id",
+              "value": "={{$json.patient_id}}"
+            },
+            {
+              "name": "status",
+              "value": "={{$json.delivery_status}}"
+            },
+            {
+              "name": "error_message",
+              "value": "={{$json.error_message}}"
+            },
+            {
+              "name": "twilio_sid",
+              "value": "={{$json.twilio_sid}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "aggregateResults",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1700, 300],
+      "parameters": {
+        "aggregate": {
+          "aggregation": [
+            {
+              "field": "delivery_status",
+              "operation": "count"
+            }
+          ]
+        },
+        "options": {
+          "groupBy": "delivery_status"
+        }
+      }
+    },
+    {
+      "id": "finalizeBroadcast",
+      "name": "Finalize Broadcast",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1900, 300],
+      "parameters": {
+        "jsCode": "// Calculer les statistiques finales\nconst results = $input.all();\nconst messageId = $node['Extract Broadcast Data'].json.message_id;\nconst totalPatients = $node['Extract Broadcast Data'].json.total_patients;\n\nlet sentCount = 0;\nlet failedCount = 0;\n\n// Compter les succès et échecs\nfor (const result of results) {\n  if (result.json.delivery_status === 'sent') {\n    sentCount += result.json.count || 1;\n  } else {\n    failedCount += result.json.count || 1;\n  }\n}\n\nconst successRate = totalPatients > 0 ? (sentCount / totalPatients) * 100 : 0;\n\nreturn [{\n  json: {\n    message_id: messageId,\n    total_recipients: totalPatients,\n    sent_count: sentCount,\n    failed_count: failedCount,\n    success_rate: Math.round(successRate * 100) / 100,\n    completed_at: new Date().toISOString(),\n    status: 'completed'\n  }\n}];"
+      }
+    },
+    {
+      "id": "updateBroadcastStatus",
+      "name": "Update Broadcast Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2100, 300],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/messaging/broadcast/{{$json.message_id}}/finalize/",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "status",
+              "value": "sent"
+            },
+            {
+              "name": "sent_count",
+              "value": "={{$json.sent_count}}"
+            },
+            {
+              "name": "failed_count",
+              "value": "={{$json.failed_count}}"
+            },
+            {
+              "name": "success_rate",
+              "value": "={{$json.success_rate}}"
+            },
+            {
+              "name": "completed_at",
+              "value": "={{$json.completed_at}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "webhookResponse",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2300, 300],
+      "parameters": {
+        "responseBody": "={{JSON.stringify({\n  \"success\": true,\n  \"message_id\": $json.message_id,\n  \"sent_count\": $json.sent_count,\n  \"failed_count\": $json.failed_count,\n  \"success_rate\": $json.success_rate + \"%\"\n})}}",
+        "options": {
+          "responseHeaders": {
+            "responseHeaders": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "errorHandler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1300, 500],
+      "parameters": {
+        "jsCode": "// Gestion des erreurs\nconst error = $json.error || 'Erreur inconnue';\nconst messageId = $node['Extract Broadcast Data'].json.message_id;\n\nreturn [{\n  json: {\n    message_id: messageId,\n    status: 'failed',\n    error: error,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "id": "notifyError",
+      "name": "Notify Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1500, 500],
+      "parameters": {
+        "url": "{{DJANGO_BASE_URL}}/api/messaging/broadcast/{{$json.message_id}}/error/",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "status",
+              "value": "failed"
+            },
+            {
+              "name": "error_message",
+              "value": "={{$json.error}}"
+            },
+            {
+              "name": "failed_at",
+              "value": "={{$json.timestamp}}"
+            }
+          ]
+        },
+        "headers": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "webhookTrigger": {
+      "main": [
+        [
+          {
+            "node": "extractBroadcastData",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "extractBroadcastData": {
+      "main": [
+        [
+          {
+            "node": "logBroadcastStart",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "logBroadcastStart": {
+      "main": [
+        [
+          {
+            "node": "splitPatients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "splitPatients": {
+      "main": [
+        [
+          {
+            "node": "addDelay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "addDelay": {
+      "main": [
+        [
+          {
+            "node": "sendWhatsAppMessage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sendWhatsAppMessage": {
+      "main": [
+        [
+          {
+            "node": "logDeliveryStatus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "errorHandler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "logDeliveryStatus": {
+      "main": [
+        [
+          {
+            "node": "updateDeliveryStatus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "updateDeliveryStatus": {
+      "main": [
+        [
+          {
+            "node": "aggregateResults",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "aggregateResults": {
+      "main": [
+        [
+          {
+            "node": "finalizeBroadcast",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "finalizeBroadcast": {
+      "main": [
+        [
+          {
+            "node": "updateBroadcastStatus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "updateBroadcastStatus": {
+      "main": [
+        [
+          {
+            "node": "webhookResponse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "errorHandler": {
+      "main": [
+        [
+          {
+            "node": "notifyError",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "UTC",
+    "errorWorkflow": {
+      "errorWorkflow": "error-handler-workflow"
+    }
+  }
+}

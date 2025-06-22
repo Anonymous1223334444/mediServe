@@ -1,0 +1,259 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "patient-data",
+        "options": {}
+      },
+      "id": "4331ef50-0175-4a6e-b853-c18cfce472af",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        20,
+        -300
+      ],
+      "webhookId": "a68b9e72-7fda-46a8-b409-0eb6d154467b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract patient data\nconst patient = $input.first().json.body.patientInfo;\nconst metadata = $input.first().json.body.metadata;\nconst documents = $input.first().json.body.documents;\n\n// Generate unique patient ID and activation token\nconst patientId = `PAT_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;\nconst activationToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);\n\n// Create personalized message\nconst message = `🏥 Bonjour ${patient.firstName} ${patient.lastName},\n\nVotre dossier médical a été créé avec succès dans notre système MediRecord.\n\n📋 Informations:\n- Nom complet: ${patient.fullName}\n- Téléphone: ${patient.phone}\n- Documents: ${documents.length} fichier(s) ajouté(s)\n\n🔗 Activez votre espace patient: https://care.sn/activate?token=${activationToken}&id=${patientId}\n\nCordialement,\nÉquipe MediRecord`;\n\n// Return data for next node\nreturn [{\n  json: {\n    // For Twilio\n    to: patient.phone,\n    body: message,\n    \n    // Patient info\n    patientId: patientId,\n    activationToken: activationToken,\n    patientName: patient.fullName,\n    patientEmail: patient.email,\n    \n    // Metadata\n    hasEmergencyContact: metadata.hasEmergencyContact,\n    documentsCount: metadata.documentsCount,\n    \n    // Original data (for database storage later)\n    originalPatientData: $json\n  }\n}];"
+      },
+      "id": "8104db8d-b2cf-45a5-9913-0eda02572146",
+      "name": "Generate Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        300,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "confirm-activation",
+        "options": {}
+      },
+      "id": "5fea6fca-35a6-4b3e-95a9-9d4854f1643a",
+      "name": "Receive Confirmation",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        120,
+        0
+      ],
+      "webhookId": "07cf79bf-4cc3-45ff-b4d7-1ae8bf078910"
+    },
+    {
+      "parameters": {
+        "jsCode": "const expected = \"Je confirme l'accès à mon espace santé CARE.\";\nconst msg = $json.Body;\nconst from = $json.From;\nif (msg.trim() === expected) {\n  return [{ json: { valid: true, telephone: from } }];\n} else {\n  return [{ json: { valid: false, telephone: from } }];\n}"
+      },
+      "id": "ecc89465-6ad5-4743-be4a-3c01f7085123",
+      "name": "Check Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.valid}}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "2ad158af-593f-40af-8ed0-98d5f2acd39c",
+      "name": "If Confirmed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://care.sn/api/mark-active",
+        "options": {}
+      },
+      "id": "98957749-0f9b-49e4-9c94-fb51b77c60f8",
+      "name": "Mark Patient Active",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        860,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://care.sn/api/log-failure",
+        "options": {}
+      },
+      "id": "73110e04-4969-4def-8303-8b05f856af24",
+      "name": "Log Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        780,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "from": "+16065955879",
+        "to": "=+221708010958",
+        "message": "Hello There, Here is a test message",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        760,
+        -480
+      ],
+      "id": "4db9b6d4-f6b3-4b5e-a49e-ff1befe5fed6",
+      "name": "Twilio",
+      "credentials": {
+        "twilioApi": {
+          "id": "rj2VJUrB108go6Uh",
+          "name": "Twilio account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "1409788527",
+        "text": "={{ $json.body }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        780,
+        -220
+      ],
+      "id": "841150e8-f16f-4e2c-9c1b-6b7b03913508",
+      "name": "Telegram",
+      "webhookId": "112bc891-a47d-4d1f-8589-4fe7b4e55a26",
+      "credentials": {
+        "telegramApi": {
+          "id": "RskYYkPK7h9RfmKp",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.originalPatientData.body.patientInfo.phone }}"
+            }
+          ]
+        }
+      },
+      "id": "a26c6c29-2b18-4eef-84f7-e773b9c3c7b4",
+      "name": "If Confirmed1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        480,
+        -300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Generate Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Message": {
+      "main": [
+        [
+          {
+            "node": "If Confirmed1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receive Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Check Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Confirmation": {
+      "main": [
+        [
+          {
+            "node": "If Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Confirmed": {
+      "main": [
+        [
+          {
+            "node": "Mark Patient Active",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Confirmed1": {
+      "main": [
+        [
+          {
+            "node": "Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "eea05afc09145189dc4b008f1c87d6d6fce298b7cc6688305645592a6a3a6751"
+  }
+}
