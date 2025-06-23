@@ -5,8 +5,9 @@ import os
 def patient_document_path(instance, filename):
     """Génère le chemin de destination pour les documents des patients"""
     # Format : patient_documents/patient_ID_NAME/filename
-    patient_folder = f"patient_{instance.patient.id}_{instance.patient.first_name}{instance.patient.last_name}"
-    return os.path.join('patient_documents', patient_folder, filename)
+    # patient_folder = f"patient_{instance.patient.id}_{instance.patient.first_name}{instance.patient.last_name}"
+    # return os.path.join('patient_documents', patient_folder, filename)
+    return f"patient_documents/patient_{instance.patient.id}/{filename}"
 
 class DocumentUpload(models.Model):
     STATUS_CHOICES = [

@@ -7,14 +7,28 @@ import logging
 import os
 import subprocess
 from django.conf import settings
+from kombu import Connection
 
 logger = logging.getLogger(__name__)
+
+def check_celery_connection():
+    try:
+        conn = Connection(settings.CELERY_BROKER_URL)
+        conn.ensure_connection(max_retries=3)
+        logger.info("✅ Connexion Celery/Redis OK")
+        return True
+    except Exception as e:
+        logger.error(f"❌ ERREUR Connexion Celery: {e}")
+        return False
 
 @shared_task(bind=True, name='documents.tasks.process_document_async')
 def process_document_async(self, document_upload_id):
     """
     Tâche Celery pour traiter un document uploadé
     """
+    if not check_celery_connection():
+        return {"status": "error", "error": "Broker non disponible"}
+    
     logger.info(f"[DÉBUT] Traitement du document {document_upload_id}")
     
     try:
@@ -67,8 +81,12 @@ def process_document_async(self, document_upload_id):
         
         env = os.environ.copy()
         env['DJANGO_SETTINGS_MODULE'] = 'mediServe.settings'
-        env['PYTHONPATH'] = settings.BASE_DIR
+        # S'assurer que BASE_DIR est au début de PYTHONPATH et préserver l'existant
+        existing_pythonpath = env.get('PYTHONPATH', '')
+        env['PYTHONPATH'] = str(settings.BASE_DIR) + os.pathsep + existing_pythonpath
         
+        logger.debug(f"Environnement pour Popen: {env}")
+
         process = subprocess.Popen(
             [script_path, str(document_upload_id)],
             stdout=subprocess.PIPE,

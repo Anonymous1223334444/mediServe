@@ -29,7 +29,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from celery.result import AsyncResult
 logger = logging.getLogger(__name__)
-
+from documents.serializers import DocumentUploadSerializer # Corrected typo here
 
 class PatientCreateAPIView(views.APIView):
     """
@@ -37,52 +37,54 @@ class PatientCreateAPIView(views.APIView):
     Création du patient avec envoi SMS et traitement des documents
     """
     permission_classes = [AllowAny]
-    
+
     def post(self, request, *args, **kwargs):
-        try:
-            logger.info(f"Création patient - Données reçues: {request.data}")
-            logger.info(f"Fichiers reçus: {request.FILES.getlist('documents')}")
-            
+        try: # Outer try block starts here
+            logger.info(f"=== CRÉATION PATIENT ===")
+            logger.info(f"Données reçues: {request.data}")
+            logger.info(f"Fichiers reçus: {len(request.FILES.getlist('documents'))} documents")
+
             # 1. Validation des données patient
             serializer = PatientCreateSerializer(data=request.data)
             if not serializer.is_valid():
                 logger.error(f"Erreurs de validation: {serializer.errors}")
                 return Response(
-                    {"error": "Validation failed", "details": serializer.errors}, 
+                    {"error": "Validation failed", "details": serializer.errors},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
             # 2. Création du patient
             patient = serializer.save()
             logger.info(f"✅ Patient créé: ID={patient.id}, Nom={patient.full_name()}")
-            
-            # 3. Envoi du SMS d'activation
+
+            # 3. Envoi du SMS d'activation (non bloquant)
             sms_sent = False
             sms_error = None
             try:
                 from messaging.services import SMSService
                 sms_service = SMSService()
                 sms_sent, sms_result = sms_service.send_activation_sms(patient)
-                
+
                 if sms_sent:
                     logger.info(f"✅ SMS d'activation envoyé à {patient.phone}")
                 else:
-                    logger.error(f"❌ Échec envoi SMS: {sms_result}")
+                    logger.warning(f"⚠️ SMS non envoyé: {sms_result}")
                     sms_error = sms_result
-                    
             except Exception as e:
-                logger.error(f"❌ Erreur service SMS: {e}")
+                logger.warning(f"⚠️ Service SMS indisponible: {e}")
                 sms_error = str(e)
-            
-            # 4. Traitement des documents uploadés
-            documents_with_tasks = []
+
+            # 4. Traitement des documents
+            documents_results = []
+            celery_available = self._check_celery_availability()
+
             if 'documents' in request.FILES:
                 files = request.FILES.getlist('documents')
                 logger.info(f"📄 {len(files)} documents à traiter")
-                
+
                 for file in files:
                     try:
-                        # Créer l'entrée document
+                        # Créer l'entrée document directement
                         doc = DocumentUpload.objects.create(
                             patient=patient,
                             file=file,
@@ -90,85 +92,115 @@ class PatientCreateAPIView(views.APIView):
                             file_size=file.size,
                             file_type=file.name.split('.')[-1].lower()
                         )
-                        logger.info(f"✅ Document créé: ID={doc.id}, Nom={file.name}")
-                        
-                        # Import et exécution de la tâche Celery
-                        try:
-                            from documents.tasks import process_document_async
-                            
-                            # Vérifier si Celery est disponible
-                            from kombu import Connection
-                            try:
-                                with Connection('redis://localhost:6379//') as conn:
-                                    conn.ensure_connection(max_retries=1, timeout=2)
-                                
-                                # Celery est disponible, envoyer la tâche
-                                task = process_document_async.delay(doc.id)
-                                
-                                # Sauvegarder le task_id
-                                if hasattr(doc, 'celery_task_id'):
-                                    doc.celery_task_id = task.id
-                                    doc.save(update_fields=['celery_task_id'])
-                                
-                                logger.info(f"✅ Tâche Celery envoyée: task_id={task.id}")
-                                
-                                documents_with_tasks.append({
-                                    'document_id': doc.id,
-                                    'task_id': task.id,
-                                    'filename': doc.original_filename
-                                })
-                                
-                            except Exception as celery_error:
-                                # Celery non disponible, exécution synchrone
-                                logger.warning(f"⚠️ Celery non disponible: {celery_error}")
-                                logger.info("🔄 Exécution synchrone du traitement")
-                                
-                                # Exécuter directement
-                                result = process_document_async(doc.id)
-                                logger.info(f"Résultat synchrone: {result}")
-                                
-                                documents_with_tasks.append({
-                                    'document_id': doc.id,
-                                    'task_id': None,
-                                    'filename': doc.original_filename,
-                                    'sync_result': result
-                                })
-                                
-                        except ImportError as ie:
-                            logger.error(f"❌ Import error: {ie}")
-                            doc.upload_status = 'failed'
-                            doc.error_message = f"Erreur d'import: {ie}"
-                            doc.save()
-                            
+                        logger.info(f"📄 Document créé: ID={doc.id}, Nom={file.name}")
+
+                        # Lancer le traitement asynchrone
+                        from documents.tasks import process_document_async
+                        task = process_document_async.delay(doc.id)
+                        doc.celery_task_id = task.id
+                        doc.save(update_fields=['celery_task_id'])
+                        logger.info(f"✅ Tâche Celery envoyée: {task.id}")
+
+                        documents_results.append({
+                            'document_id': doc.id,
+                            'filename': doc.original_filename,
+                            'status': 'pending',
+                            'task_id': task.id
+                        })
+
                     except Exception as e:
-                        logger.error(f"❌ Erreur document {file.name}: {str(e)}", exc_info=True)
-            
-            # 5. Préparer la réponse
+                        logger.error(f"❌ Erreur document {file.name}: {e}")
+                        documents_results.append({
+                            'filename': file.name,
+                            'status': 'error',
+                            'error': str(e)
+                        })
+
+            # 5. Préparer la réponse COMPATIBLE avec le frontend
+            # This block is now outside the document processing loop
             response_data = {
+                # Champs attendus par le frontend
                 "patient_id": patient.id,
                 "first_name": patient.first_name,
                 "last_name": patient.last_name,
                 "phone": patient.phone,
                 "activation_token": str(patient.activation_token),
-                "message": "Patient créé avec succès",
-                "documents": documents_with_tasks,
+
+                # Documents dans le format attendu
+                "documents": documents_results,  # Le frontend vérifie data.documents.length
+
+                # Infos supplémentaires
+                "sms_sent": sms_sent,
+                "sms_error": sms_error,
+                "activation_url": f"{settings.SITE_PUBLIC_URL}/api/patients/activate/{patient.activation_token}/",
                 "indexing_status_url": f"/api/patients/{patient.id}/indexing-status/",
-                "sms_sent": sms_sent
+
+                # Message de succès
+                "message": "Patient créé avec succès",
+                "status": "success"
             }
-            
-            if not sms_sent:
-                response_data["sms_error"] = sms_error
-                response_data["activation_url"] = f"{settings.SITE_PUBLIC_URL}/api/patients/activate/{patient.activation_token}/"
-            
-            logger.info(f"✅ Réponse finale: {response_data}")
+
+            logger.info(f"✅ Patient créé avec succès")
+            logger.info(f"📤 Réponse envoyée: patient_id={patient.id}, documents={len(documents_results)}")
+
             return Response(response_data, status=status.HTTP_201_CREATED)
-            
-        except Exception as e:
+
+        except Exception as e: # This is the outer catch-all for the entire post method
             logger.exception(f"❌ Erreur non gérée: {e}")
             return Response(
-                {"error": str(e)},
+                {"error": "Erreur serveur", "details": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    def _check_celery_availability(self):
+        """Vérifier si Celery est disponible"""
+        try:
+            from kombu import Connection
+            with Connection(settings.CELERY_BROKER_URL) as conn:
+                conn.ensure_connection(max_retries=1, timeout=2)
+            logger.info("✅ Celery disponible")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Celery non disponible: {e}")
+            return False
+
+    def _process_document_sync(self, document_id):
+        """Traiter un document de manière synchrone"""
+        try:
+            # Importer le script de vectorisation
+            import subprocess
+            script_path = os.path.join(settings.BASE_DIR, 'scripts', 'vectorize_single_document.py')
+
+            if not os.path.exists(script_path):
+                # Essayer l'import direct
+                logger.info("Import direct du module de vectorisation")
+                import sys
+                sys.path.insert(0, os.path.join(settings.BASE_DIR, 'scripts'))
+                from vectorize_single_document import DocumentVectorizer
+
+                vectorizer = DocumentVectorizer()
+                return vectorizer.process_document(document_id)
+            else:
+                # Exécuter via subprocess
+                logger.info(f"Exécution du script: {script_path}")
+                result = subprocess.run(
+                    ['python', script_path, str(document_id)],
+                    capture_output=True,
+                    text=True
+                )
+                return result.returncode == 0
+
+        except Exception as e:
+            logger.error(f"Erreur traitement synchrone: {e}")
+            # Marquer le document comme échoué
+            try:
+                doc = DocumentUpload.objects.get(id=document_id)
+                doc.upload_status = 'failed'
+                doc.error_message = str(e)
+                doc.save()
+            except:
+                pass
+            return False
 
 class DocumentRetryView(views.APIView):
     """
@@ -176,36 +208,36 @@ class DocumentRetryView(views.APIView):
     Relance le traitement d'un document échoué
     """
     permission_classes = [AllowAny]
-    
+
     def post(self, request, document_id):
         try:
             doc = DocumentUpload.objects.get(id=document_id)
-            
+
             if doc.upload_status not in ['failed', 'pending']:
                 return Response(
                     {'error': 'Le document ne peut pas être relancé'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             # Réinitialiser le statut
             doc.upload_status = 'pending'
             doc.error_message = ''
             doc.save()
-            
+
             # Relancer la tâche
             from documents.tasks import process_document_async
             task = process_document_async.delay(doc.id)
-            
+
             # Sauvegarder le nouveau task_id
             doc.celery_task_id = task.id
             doc.save(update_fields=['celery_task_id'])
-            
+
             return Response({
                 'message': 'Document relancé',
                 'task_id': task.id,
                 'document_id': doc.id
             })
-            
+
         except DocumentUpload.DoesNotExist:
             return Response(
                 {'error': 'Document non trouvé'},
@@ -220,16 +252,16 @@ class PatientCheckActiveAPIView(views.APIView):
     Utilisé par N8N pour valider les sessions WhatsApp
     """
     permission_classes = [AllowAny]
-    
+
     def post(self, request):
         phone = request.data.get('phone')
-        
+
         if not phone:
             return Response(
                 {"error": "Numéro de téléphone requis"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         try:
             patient = Patient.objects.get(phone=phone)
             return Response({
@@ -244,22 +276,22 @@ class PatientCheckActiveAPIView(views.APIView):
                 "patient_id": None,
                 "error": "Patient non trouvé"
             })
-        
+
 class PatientListAPIView(views.APIView):
     """
     GET /api/patients/
     Liste des patients avec pagination et filtres
     """
     permission_classes = [AllowAny]
-    
+
     def get(self, request):
         patients = Patient.objects.all().order_by('-created_at')
-        
+
         # Filtres
         is_active = request.GET.get('is_active')
         if is_active is not None:
             patients = patients.filter(is_active=is_active.lower() == 'true')
-        
+
         search = request.GET.get('search')
         if search:
             patients = patients.filter(
@@ -267,16 +299,16 @@ class PatientListAPIView(views.APIView):
                 models.Q(last_name__icontains=search) |
                 models.Q(phone__icontains=search)
             )
-        
+
         # Pagination simple
         page = int(request.GET.get('page', 1))
         page_size = int(request.GET.get('page_size', 20))
         start = (page - 1) * page_size
         end = start + page_size
-        
+
         total_count = patients.count()
         patients_page = patients[start:end]
-        
+
         # Sérialiser les données
         data = []
         for patient in patients_page:
@@ -290,7 +322,7 @@ class PatientListAPIView(views.APIView):
                 'activated_at': patient.activated_at,
                 'documents_count': patient.documents.count() if hasattr(patient, 'documents') else 0
             })
-        
+
         return Response({
             'results': data,
             'total_count': total_count,
@@ -319,13 +351,13 @@ class PatientConfirmAPIView(views.APIView):
         try:
             # Trouver le patient par son numéro de téléphone
             patient = Patient.objects.get(phone=phone)
-            
+
             if valid:
                 # Activer le patient
                 patient.is_active = True
                 patient.activated_at = timezone.now()
                 patient.save()
-                
+
                 # Envoyer un message de bienvenue
                 try:
                     whatsapp_service = WhatsAppService()
@@ -335,11 +367,11 @@ class PatientConfirmAPIView(views.APIView):
                 except Exception as e:
                     # Ignorer les erreurs d'envoi de message de bienvenue
                     pass
-                
+
                 return Response({"detail": "Patient activé avec succès."}, status=status.HTTP_200_OK)
             else:
                 return Response({"detail": "Confirmation invalide."}, status=status.HTTP_200_OK)
-                
+
         except Patient.DoesNotExist:
             return Response({"detail": "Patient non trouvé."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -349,81 +381,32 @@ class PatientIndexingStatusView(views.APIView):
     Obtient le statut d'indexation des documents d'un patient
     """
     permission_classes = [AllowAny]
-    
+
     def get(self, request, patient_id):
         try:
-            # Vérifier que le patient existe
-            try:
-                patient = Patient.objects.get(id=patient_id)
-            except Patient.DoesNotExist:
-                return Response(
-                    {'error': 'Patient non trouvé'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+            patient = Patient.objects.get(id=patient_id)
+            documents = DocumentUpload.objects.filter(patient=patient)
             
-            # Récupérer tous les documents du patient
-            documents = DocumentUpload.objects.filter(
-                patient_id=patient_id
-            ).order_by('-uploaded_at')
-            
-            # Calculer les statistiques
-            total = documents.count()
-            indexed = documents.filter(upload_status='indexed').count()
-            processing = documents.filter(upload_status='processing').count()
-            failed = documents.filter(upload_status='failed').count()
-            pending = documents.filter(upload_status='pending').count()
-            
-            # Détails par document
-            document_details = []
-            for doc in documents:
-                detail = {
-                    'id': doc.id,
-                    'filename': doc.original_filename,
-                    'status': doc.upload_status,
-                    'error': doc.error_message if doc.upload_status == 'failed' else None,
-                    'uploaded_at': doc.uploaded_at.isoformat() if doc.uploaded_at else None,
-                    'processed_at': doc.processed_at.isoformat() if doc.processed_at else None
-                }
-                
-                # Si un task_id est stocké, vérifier le statut Celery
-                if hasattr(doc, 'celery_task_id') and doc.celery_task_id:
-                    try:
-                        result = AsyncResult(doc.celery_task_id)
-                        detail['task_status'] = result.status
-                        
-                        # Obtenir les infos de progression si disponibles
-                        if hasattr(result, 'info') and isinstance(result.info, dict):
-                            detail['task_progress'] = result.info.get('current', 0)
-                            detail['task_total'] = result.info.get('total', 100)
-                            detail['task_message'] = result.info.get('status', '')
-                        else:
-                            detail['task_progress'] = 0
-                    except Exception as e:
-                        logger.warning(f"Erreur récupération statut Celery: {e}")
-                        detail['task_status'] = 'UNKNOWN'
-                        detail['task_progress'] = 0
-                
-                document_details.append(detail)
-            
-            # Calculer la progression globale
-            if total > 0:
-                progress = (indexed / total) * 100
-            else:
-                progress = 0
-            
+            # Calculer les stats
+            stats = {
+                'total': documents.count(),
+                'indexed': documents.filter(upload_status='indexed').count(),
+                'processing': documents.filter(upload_status='processing').count(),
+                'failed': documents.filter(upload_status='failed').count(),
+                'pending': documents.filter(upload_status='pending').count(),
+            }
+            stats['is_complete'] = (
+                stats['processing'] == 0 and 
+                stats['pending'] == 0 and
+                stats['total'] > 0
+            )
+            stats['progress'] = int((stats['indexed'] / stats['total']) * 100) if stats['total'] > 0 else 0
+
             return Response({
                 'patient_id': patient_id,
-                'patient_name': patient.full_name(),
-                'total_documents': total,
-                'indexed': indexed,
-                'processing': processing,
-                'failed': failed,
-                'pending': pending,
-                'progress': round(progress, 2),
-                'is_complete': pending == 0 and processing == 0,
-                'documents': document_details
+                'stats': stats,
+                'documents': DocumentUploadSerializer(documents, many=True).data
             })
-            
         except Exception as e:
             logger.error(f"Erreur dans PatientIndexingStatusView: {str(e)}", exc_info=True)
             return Response(
@@ -438,11 +421,11 @@ class DocumentIndexingStatusView(views.APIView):
     Obtient le statut détaillé d'un document spécifique
     """
     permission_classes = [AllowAny]
-    
+
     def get(self, request, document_id):
         try:
             doc = DocumentUpload.objects.get(id=document_id)
-            
+
             response_data = {
                 'id': doc.id,
                 'filename': doc.original_filename,
@@ -452,15 +435,15 @@ class DocumentIndexingStatusView(views.APIView):
                 'processed_at': doc.processed_at,
                 'error_message': doc.error_message
             }
-            
+
             # Vérifier le statut Celery si disponible
             if hasattr(doc, 'celery_task_id') and doc.celery_task_id:
                 result = AsyncResult(doc.celery_task_id)
                 response_data['task_status'] = result.status
                 response_data['task_info'] = result.info
-            
+
             return Response(response_data)
-            
+
         except DocumentUpload.DoesNotExist:
             return Response(
                 {'error': 'Document non trouvé'},
@@ -474,28 +457,28 @@ class ActivateRedirectView(View):
     """
     def get(self, request, token=None):
         try:
-        # 1. Vérifier le token
+            # 1. Vérifier le token
             patient = Patient.objects.get(activation_token=token)
             if patient.is_active:
                 return HttpResponseBadRequest("Votre compte est déjà activé.")
-            
+
             # 2. Construire l'URL WhatsApp
             # Format: https://api.whatsapp.com/send?phone=NUMERO&text=MESSAGE
             whatsapp_number = settings.TWILIO_WHATSAPP_NUMBER.lstrip('+')
             message = "Je confirme l'accès à mon espace santé CARE."
-            
+
             params = {
                 "phone": whatsapp_number,
                 "text": message
             }
-            
+
             # Encoder les paramètres pour l'URL
             encoded_params = urllib.parse.urlencode(params)
             whatsapp_url = f"https://api.whatsapp.com/send?{encoded_params}"
-            
+
             # 3. Rediriger vers WhatsApp
             return HttpResponseRedirect(whatsapp_url)
-            
+
         except Patient.DoesNotExist:
             return HttpResponseBadRequest("Lien d'activation invalide ou expiré.")
         except Exception as e:

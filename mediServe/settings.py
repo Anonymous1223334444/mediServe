@@ -164,6 +164,9 @@ ALLOWED_HOSTS = [
 ]
 
 
+CELERY_TASK_ALWAYS_EAGER = DEBUG 
+CELERY_EAGER_PROPAGATES_EXCEPTIONS = True
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -183,6 +186,7 @@ INSTALLED_APPS = [
     'documents',
     'sessions.apps.WhatsAppSessionsConfig',
     'rag',
+    'mediServe',
     'metrics',
     'messaging',
     # 'n8nautomation',
