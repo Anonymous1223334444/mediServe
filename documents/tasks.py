@@ -24,23 +24,25 @@ def check_celery_connection():
 @shared_task(bind=True, name='documents.tasks.process_document_async')
 def process_document_async(self, document_upload_id):
     """
-    Tâche Celery pour traiter un document uploadé
+    Tâche Celery pour traiter un document avec progression détaillée
     """
-    if not check_celery_connection():
-        return {"status": "error", "error": "Broker non disponible"}
-    
     logger.info(f"[DÉBUT] Traitement du document {document_upload_id}")
     
     try:
         # 1. Récupérer le document
         doc_upload = DocumentUpload.objects.get(id=document_upload_id)
         
-        # Sauvegarder le task_id si le champ existe
+        # Sauvegarder le task_id
         if hasattr(doc_upload, 'celery_task_id'):
             doc_upload.celery_task_id = self.request.id
             doc_upload.save(update_fields=['celery_task_id'])
         
-        # 2. Vérifier que le fichier existe
+        # 2. Vérifications initiales
+        self.update_state(
+            state='PROGRESS',
+            meta={'current': 5, 'total': 100, 'status': 'Vérification du fichier...'}
+        )
+        
         if not doc_upload.file or not os.path.exists(doc_upload.file.path):
             logger.error(f"Fichier manquant pour document {document_upload_id}")
             doc_upload.upload_status = 'failed'
@@ -48,17 +50,28 @@ def process_document_async(self, document_upload_id):
             doc_upload.save()
             return {"status": "error", "error": "Fichier manquant"}
         
-        # 3. Mettre à jour le statut
+        # 3. Démarrer le traitement
         doc_upload.upload_status = 'processing'
         doc_upload.save()
         
-        # Mettre à jour la progression
         self.update_state(
             state='PROGRESS',
-            meta={'current': 10, 'total': 100, 'status': 'Initialisation...'}
+            meta={'current': 15, 'total': 100, 'status': 'Initialisation du traitement...'}
         )
         
-        # 4. Préparer et exécuter le script de vectorisation
+        # 4. Extraction du texte
+        self.update_state(
+            state='PROGRESS',
+            meta={'current': 30, 'total': 100, 'status': 'Extraction du texte...'}
+        )
+        
+        # 5. Vectorisation
+        self.update_state(
+            state='PROGRESS',
+            meta={'current': 60, 'total': 100, 'status': 'Vectorisation en cours...'}
+        )
+        
+        # 6. Exécuter le script de vectorisation
         script_path = os.path.join(settings.BASE_DIR, 'scripts', 'vectorize_document.sh')
         
         if not os.path.exists(script_path):
@@ -68,25 +81,12 @@ def process_document_async(self, document_upload_id):
             doc_upload.save()
             return {"status": "error", "error": "Script non trouvé"}
         
-        # S'assurer que le script est exécutable
         os.chmod(script_path, 0o755)
-        
-        self.update_state(
-            state='PROGRESS',
-            meta={'current': 30, 'total': 100, 'status': 'Vectorisation en cours...'}
-        )
-        
-        # 5. Exécuter le script
-        logger.info(f"Exécution: {script_path} {document_upload_id}")
         
         env = os.environ.copy()
         env['DJANGO_SETTINGS_MODULE'] = 'mediServe.settings'
-        # S'assurer que BASE_DIR est au début de PYTHONPATH et préserver l'existant
-        existing_pythonpath = env.get('PYTHONPATH', '')
-        env['PYTHONPATH'] = str(settings.BASE_DIR) + os.pathsep + existing_pythonpath
+        env['PYTHONPATH'] = str(settings.BASE_DIR) + os.pathsep + env.get('PYTHONPATH', '')
         
-        logger.debug(f"Environnement pour Popen: {env}")
-
         process = subprocess.Popen(
             [script_path, str(document_upload_id)],
             stdout=subprocess.PIPE,
@@ -96,7 +96,7 @@ def process_document_async(self, document_upload_id):
             cwd=settings.BASE_DIR
         )
         
-        # Lire la sortie ligne par ligne
+        # Lire la sortie avec progression
         output_lines = []
         for line in iter(process.stdout.readline, ''):
             line = line.strip()
@@ -104,32 +104,41 @@ def process_document_async(self, document_upload_id):
                 logger.info(f"[SCRIPT] {line}")
                 output_lines.append(line)
                 
-                # Mettre à jour la progression basée sur la sortie
-                if "Vectorisation réussie" in line:
+                # Mettre à jour la progression selon la sortie
+                if "Extraction terminée" in line:
                     self.update_state(
                         state='PROGRESS',
-                        meta={'current': 80, 'total': 100, 'status': 'Finalisation...'}
+                        meta={'current': 70, 'total': 100, 'status': 'Indexation...'}
+                    )
+                elif "Vectorisation réussie" in line:
+                    self.update_state(
+                        state='PROGRESS',
+                        meta={'current': 90, 'total': 100, 'status': 'Finalisation...'}
                     )
         
         process.stdout.close()
         return_code = process.wait()
         
-        # 6. Traiter le résultat
+        # 7. Traiter le résultat
         if return_code == 0:
             logger.info(f"✅ Document {document_upload_id} traité avec succès")
             
+            doc_upload.upload_status = 'indexed'
+            doc_upload.processed_at = timezone.now()
+            doc_upload.save()
+            
             self.update_state(
-                state='PROGRESS',
-                meta={'current': 100, 'total': 100, 'status': 'Terminé!'}
+                state='SUCCESS',
+                meta={'current': 100, 'total': 100, 'status': 'Terminé avec succès!'}
             )
             
-            # Envoyer une notification WhatsApp si configuré
+            # Notification WhatsApp
             try:
                 from messaging.services import WhatsAppService
                 whatsapp = WhatsAppService()
                 patient = doc_upload.patient
                 
-                message = f"✅ {patient.first_name}, votre document '{doc_upload.original_filename}' a été traité avec succès."
+                message = f"✅ {patient.first_name}, votre document '{doc_upload.original_filename}' a été indexé avec succès."
                 whatsapp.send_message(patient.phone, message)
             except Exception as e:
                 logger.warning(f"Notification WhatsApp échouée: {e}")
@@ -149,7 +158,7 @@ def process_document_async(self, document_upload_id):
                 "status": "error",
                 "document_id": document_upload_id,
                 "return_code": return_code,
-                "output": '\n'.join(output_lines[-10:])  # Dernières 10 lignes
+                "output": '\n'.join(output_lines[-5:])  # Dernières 5 lignes
             }
             
     except DocumentUpload.DoesNotExist:

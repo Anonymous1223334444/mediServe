@@ -375,38 +375,77 @@ class PatientConfirmAPIView(views.APIView):
         except Patient.DoesNotExist:
             return Response({"detail": "Patient non trouvé."}, status=status.HTTP_404_NOT_FOUND)
 
+
 class PatientIndexingStatusView(views.APIView):
     """
     GET /api/patients/{patient_id}/indexing-status/
-    Obtient le statut d'indexation des documents d'un patient
+    Obtient le statut d'indexation des documents d'un patient avec plus de détails
     """
     permission_classes = [AllowAny]
 
     def get(self, request, patient_id):
         try:
             patient = Patient.objects.get(id=patient_id)
-            documents = DocumentUpload.objects.filter(patient=patient)
+            documents = DocumentUpload.objects.filter(patient=patient).select_related('patient')
             
             # Calculer les stats
-            stats = {
-                'total': documents.count(),
-                'indexed': documents.filter(upload_status='indexed').count(),
-                'processing': documents.filter(upload_status='processing').count(),
-                'failed': documents.filter(upload_status='failed').count(),
-                'pending': documents.filter(upload_status='pending').count(),
-            }
-            stats['is_complete'] = (
-                stats['processing'] == 0 and 
-                stats['pending'] == 0 and
-                stats['total'] > 0
-            )
-            stats['progress'] = int((stats['indexed'] / stats['total']) * 100) if stats['total'] > 0 else 0
+            total = documents.count()
+            indexed = documents.filter(upload_status='indexed').count()
+            processing = documents.filter(upload_status='processing').count()
+            failed = documents.filter(upload_status='failed').count()
+            pending = documents.filter(upload_status='pending').count()
+            
+            progress = int((indexed / total) * 100) if total > 0 else 0
+            is_complete = (indexed + failed) == total and total > 0
+            
+            # Détails des documents avec progression Celery
+            documents_data = []
+            for doc in documents:
+                doc_data = {
+                    'id': doc.id,
+                    'filename': doc.original_filename,
+                    'status': doc.upload_status,
+                    'error': doc.error_message if doc.error_message else None,
+                    'uploaded_at': doc.uploaded_at.isoformat(),
+                    'processed_at': doc.processed_at.isoformat() if doc.processed_at else None,
+                }
+                
+                # Ajouter la progression Celery si disponible
+                if hasattr(doc, 'celery_task_id') and doc.celery_task_id:
+                    try:
+                        from celery.result import AsyncResult
+                        result = AsyncResult(doc.celery_task_id)
+                        
+                        if result.state == 'PROGRESS' and isinstance(result.info, dict):
+                            doc_data['progress'] = result.info.get('current', 0)
+                            doc_data['task_status'] = result.info.get('status', '')
+                        elif result.state in ['SUCCESS', 'FAILURE']:
+                            doc_data['task_status'] = result.state
+                            
+                    except Exception as e:
+                        logger.warning(f"Erreur récupération statut Celery pour doc {doc.id}: {e}")
+                
+                documents_data.append(doc_data)
 
             return Response({
                 'patient_id': patient_id,
-                'stats': stats,
-                'documents': DocumentUploadSerializer(documents, many=True).data
+                'patient_name': patient.full_name(),
+                'total_documents': total,
+                'indexed': indexed,
+                'processing': processing,
+                'failed': failed,
+                'pending': pending,
+                'progress': progress,
+                'is_complete': is_complete,
+                'documents': documents_data,
+                'last_updated': timezone.now().isoformat()
             })
+            
+        except Patient.DoesNotExist:
+            return Response(
+                {'error': 'Patient non trouvé'},
+                status=status.HTTP_404_NOT_FOUND
+            )
         except Exception as e:
             logger.error(f"Erreur dans PatientIndexingStatusView: {str(e)}", exc_info=True)
             return Response(
