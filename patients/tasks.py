@@ -1,3 +1,4 @@
+# patients/tasks.py
 from celery import shared_task
 from django.utils import timezone
 from .models import Patient
@@ -97,4 +98,3 @@ def send_activation_reminder():
     except Exception as e:
         logger.error(f"Erreur envoi rappels d'activation: {e}")
         return {"error": str(e)}
-

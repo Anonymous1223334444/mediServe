@@ -30,7 +30,7 @@ N8N_API_KEY   = os.getenv("N8N_API_KEY", None)
 # Your Twilio WhatsApp number in E.164 format (e.g. "+1415XXXXXXX")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", None)
 
-SITE_PUBLIC_URL = os.getenv("http://127.0.0.1:8000", "http://127.0.0.1:8000")
+SITE_PUBLIC_URL = os.getenv("https://orca-eternal-specially.ngrok-free.app", "https://orca-eternal-specially.ngrok-free.app")
 
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
@@ -161,6 +161,7 @@ ALLOWED_HOSTS = [
     "inspired-shrew-usually.ngrok-free.app",
     "localhost",
     "127.0.0.1",
+    "orca-eternal-specially.ngrok-free.app",
 ]
 
 

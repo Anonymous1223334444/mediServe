@@ -12,6 +12,8 @@
 8. [Maintenance et Monitoring](#maintenance-et-monitoring)
 9. [Dépannage](#dépannage)
 10. [Contribuer](#contribuer)
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-mpnet-base-v2')"
+
 
 ---
 
