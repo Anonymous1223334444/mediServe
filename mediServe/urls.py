@@ -93,7 +93,7 @@ schema_view = get_schema_view(
     public=True,
     permission_classes=(permissions.AllowAny,),
 )
-from messaging.webhook_simple import webhook_simple
+from messaging.whatsapp_rag_webhook import whatsapp_rag_webhook
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -107,7 +107,7 @@ urlpatterns = [
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('api/webhook/twilio/', webhook_simple, name='twilio-webhook'),
+    path('api/webhook/twilio/', whatsapp_rag_webhook, name='twilio-webhook'),
     path('api/rag/query/', RAGQueryView.as_view(), name='rag-query'),
 
     # Endpoints pour WhatsApp et activation
