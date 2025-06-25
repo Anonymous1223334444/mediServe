@@ -25,25 +25,22 @@ class SMSService:
             # Construire le lien d'activation
             activation_url = f"{settings.SITE_PUBLIC_URL}/api/patients/activate/{patient.activation_token}/"
             
-            # Message en français
-            message = f"""
-                Bonjour {patient.first_name},
+            # Message en français avec instructions claires
+            message = f"""Bonjour {patient.first_name},
 
-                Bienvenue sur votre espace santé CARE !
+Bienvenue sur votre espace santé !
 
-                Pour activer votre accès personnalisé sur WhatsApp, cliquez sur ce lien :
-                {activation_url}
+Pour activer votre accès WhatsApp, cliquez sur ce lien :
+{activation_url}
 
-                Ce lien vous permettra d'accéder à vos documents médicaux et de poser des questions à votre assistant médical 24h/24.
+Puis envoyez le message qui apparaîtra.
 
-                Cordialement,
-                L'équipe médicale
-            """.strip()
+L'équipe médicale"""
             
             # Envoyer le SMS
             sms = self.client.messages.create(
                 body=message,
-                from_=self.from_number.replace('whatsapp:', ''),  # Utiliser le numéro SMS, pas WhatsApp
+                from_=self.from_number.replace('whatsapp:', ''),
                 to=patient.phone
             )
             
@@ -53,6 +50,7 @@ class SMSService:
         except Exception as e:
             logger.error(f"Erreur envoi SMS à {patient.phone}: {e}")
             return False, str(e)
+
     
     def send_indexing_complete_sms(self, patient, doc_count):
         """Envoie un SMS quand l'indexation est terminée"""

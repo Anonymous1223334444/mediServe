@@ -43,6 +43,11 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_VERIFY_SID = os.getenv('TWILIO_VERIFY_SID')
 TWILIO_WHATSAPP_NUMBER = os.getenv('TWILIO_WHATSAPP_NUMBER')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+HEALTH_STRUCTURE_NAME = os.getenv('HEALTH_STRUCTURE_NAME', 'Centre Médical Dalal Diam')
+WHATSAPP_BUSINESS_PHONE_ID = os.getenv('611149155424921')
+WHATSAPP_BUSINESS_TOKEN = os.getenv('EAAZAhIoyGpUgBOZBeigSXXkzTd09ahZBrORIk2biIUs3J1oT9YBka297fS6KOSYQI0jdsOf1X74YzqKVI8KLuZBjyJZCJJZB7E78ZB26gKjUvqvuMDHoMZCfkdNYDl7QPD1PkjoZCdTx6Nywvw3p7yxSIIabm1DB7rgSIp8j7JxZBkQasaFlOX5fJ7OJtZBRcy2bYSlg8sKMLK7DZAhyRBYSguZAVhBFxRrI82gGxMx2QhPyPJTv0ZBBoL')
+WHATSAPP_VERIFY_TOKEN = os.getenv('CARE_MEDICAL_VERIFY_2025')
+
 
 # Configuration Pinecone
 PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
@@ -231,6 +236,11 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://orca-eternal-specially.ngrok-free.app',
+    'https://api.twilio.com',
 ]
 
 CORS_ALLOW_CREDENTIALS = True

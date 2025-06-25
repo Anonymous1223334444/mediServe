@@ -42,6 +42,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.urls import path, include
 from rag.views import RAGQueryView
 from patients.views import PatientConfirmAPIView, ActivateRedirectView
+from messaging.twilio_webhook import twilio_webhook
+
 
 
 def n8n_proxy(request, path):
@@ -91,6 +93,7 @@ schema_view = get_schema_view(
     public=True,
     permission_classes=(permissions.AllowAny,),
 )
+from messaging.webhook_simple import webhook_simple
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -104,6 +107,7 @@ urlpatterns = [
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/webhook/twilio/', webhook_simple, name='twilio-webhook'),
     path('api/rag/query/', RAGQueryView.as_view(), name='rag-query'),
 
     # Endpoints pour WhatsApp et activation

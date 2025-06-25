@@ -21,6 +21,10 @@ class Patient(models.Model):
 
     # Automatically generate a UUID activation token
     activation_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    activation_link_clicked = models.BooleanField(
+        default=False, 
+        help_text="Indique si le patient a cliqué sur le lien d'activation"
+    )
     is_active = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     activated_at = models.DateTimeField(blank=True, null=True)

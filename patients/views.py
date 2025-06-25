@@ -489,36 +489,44 @@ class DocumentIndexingStatusView(views.APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+
 class ActivateRedirectView(View):
     """
-    GET /api/patients/activate/uuid:token/
-    Redirige vers WhatsApp avec message pré-rempli pour l'activation.
+    GET /api/patients/activate/<uuid:token>/
+    Redirige vers WhatsApp avec le message d'activation incluant le token
     """
     def get(self, request, token=None):
         try:
             # 1. Vérifier le token
             patient = Patient.objects.get(activation_token=token)
-            if patient.is_active:
-                return HttpResponseBadRequest("Votre compte est déjà activé.")
-
-            # 2. Construire l'URL WhatsApp
-            # Format: https://api.whatsapp.com/send?phone=NUMERO&text=MESSAGE
-            whatsapp_number = settings.TWILIO_WHATSAPP_NUMBER.lstrip('+')
-            message = "Je confirme l'accès à mon espace santé CARE."
-
+            
+            # 2. Marquer que le lien a été cliqué
+            if hasattr(patient, 'activation_link_clicked'):
+                patient.activation_link_clicked = True
+                patient.save(update_fields=['activation_link_clicked'])
+            
+            # 3. Construire le message avec le token
+            whatsapp_number = settings.TWILIO_WHATSAPP_NUMBER.replace('whatsapp:', '').lstrip('+')
+            
+            # Message avec le token pour l'activation automatique
+            message = f"ACTIVER {token}"
+            
+            # 4. Créer l'URL WhatsApp
             params = {
                 "phone": whatsapp_number,
                 "text": message
             }
-
-            # Encoder les paramètres pour l'URL
+            
             encoded_params = urllib.parse.urlencode(params)
             whatsapp_url = f"https://api.whatsapp.com/send?{encoded_params}"
-
-            # 3. Rediriger vers WhatsApp
+            
+            logger.info(f"Redirection WhatsApp pour patient {patient.id} avec token {token}")
+            
+            # 5. Rediriger vers WhatsApp
             return HttpResponseRedirect(whatsapp_url)
-
+            
         except Patient.DoesNotExist:
             return HttpResponseBadRequest("Lien d'activation invalide ou expiré.")
         except Exception as e:
+            logger.error(f"Erreur activation: {e}")
             return HttpResponseBadRequest(f"Erreur lors de l'activation: {str(e)}")
