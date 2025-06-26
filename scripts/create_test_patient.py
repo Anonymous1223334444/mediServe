@@ -1,136 +1,95 @@
 #!/usr/bin/env python3
 """
-Script pour créer un patient de test avec documents via l'API
+Script pour créer un patient de test
+Usage: python create_test_patient.py
 """
 import os
 import sys
-import json
-import requests
-from datetime import datetime
+import django
 
-def create_test_pdf(filename="test_document.pdf"):
-    """Créer un PDF de test simple"""
-    try:
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.pagesizes import letter
-        
-        c = canvas.Canvas(filename, pagesize=letter)
-        c.drawString(100, 750, "Document Medical de Test")
-        c.drawString(100, 700, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        c.drawString(100, 650, "Patient: Test Patient")
-        c.drawString(100, 600, "Diagnostic: Test médical de routine")
-        c.drawString(100, 550, "Traitement: Paracétamol 500mg, 3 fois par jour")
-        c.save()
-        
-        print(f"✅ PDF de test créé: {filename}")
-        return filename
-    except ImportError:
-        print("⚠️  reportlab non installé. Utilisation d'un fichier texte à la place.")
-        with open("test_document.txt", "w") as f:
-            f.write("Document médical de test\n")
-            f.write(f"Date: {datetime.now()}\n")
-            f.write("Patient: Test Patient\n")
-            f.write("Diagnostic: Test médical\n")
-        return "test_document.txt"
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# Aller deux niveaux plus haut pour atteindre le répertoire racine du projet Django
+# (Exemple: si script est dans /project_root/scripts/, cela renvoie /project_root/)
+project_root = os.path.join(script_dir, '..', '') # Ajout d'un '/' final pour s'assurer que c'est un chemin de répertoire
+sys.path.insert(0, os.path.abspath(project_root))
 
-def create_test_patient(base_url="http://localhost:8000", with_documents=True):
-    """Créer un patient de test via l'API"""
+
+# Configuration Django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mediServe.settings')
+django.setup()
+
+from patients.models import Patient
+from messaging.services import SMSService
+import uuid
+
+def create_test_patient():
+    print("=== CRÉATION D'UN PATIENT DE TEST ===\n")
     
-    # Données du patient
-    patient_data = {
-        "first_name": "Test",
-        "last_name": f"Patient_{datetime.now().strftime('%H%M%S')}",
-        "phone": f"+22177{datetime.now().strftime('%H%M%S')}",
-        "email": f"test_{datetime.now().strftime('%H%M%S')}@example.com",
-        "date_of_birth": "1990-01-01",
-        "gender": "male",
-        "address": "123 Rue de Test, Dakar",
-        "medical_history": "Antécédents de test pour vérification du système",
-        "allergies": "Aucune allergie connue",
-        "current_medications": "Paracétamol 500mg"
-    }
+    # Demander les informations
+    first_name = input("Prénom: ") or "Test"
+    last_name = input("Nom: ") or "Patient"
+    phone = input("Numéro de téléphone (format: +221778828376): ")
     
-    print("📋 Création d'un patient de test...")
-    print(f"   Nom: {patient_data['first_name']} {patient_data['last_name']}")
-    print(f"   Téléphone: {patient_data['phone']}")
+    if not phone:
+        print("❌ Le numéro de téléphone est obligatoire!")
+        return
     
-    # Préparer la requête
-    url = f"{base_url}/api/patients/"
-    files = []
-    
-    if with_documents:
-        # Créer des documents de test
-        doc1 = create_test_pdf("ordonnance_test.pdf")
-        doc2 = create_test_pdf("analyse_test.pdf")
+    # Vérifier si le patient existe déjà
+    existing = Patient.objects.filter(phone=phone).first()
+    if existing:
+        print(f"\n⚠️ Un patient existe déjà avec ce numéro:")
+        print(f"  - Nom: {existing.full_name()}")
+        print(f"  - Token: {existing.activation_token}")
+        print(f"  - Actif: {'Oui' if existing.is_active else 'Non'}")
         
-        files = [
-            ('documents', (doc1, open(doc1, 'rb'), 'application/pdf')),
-            ('documents', (doc2, open(doc2, 'rb'), 'application/pdf'))
-        ]
-        print(f"📄 Ajout de {len(files)} documents")
-    
-    try:
-        # Envoyer la requête
-        print(f"\n🚀 Envoi vers {url}...")
-        
-        if files:
-            response = requests.post(url, data=patient_data, files=files)
-            # Fermer les fichiers
-            for _, (_, f, _) in files:
-                f.close()
+        response = input("\nVoulez-vous réinitialiser ce patient ? (oui/non): ")
+        if response.lower() in ['oui', 'o', 'yes', 'y']:
+            # Réinitialiser
+            existing.is_active = False
+            existing.activation_token = uuid.uuid4()
+            existing.activated_at = None
+            existing.save()
+            patient = existing
+            print("✅ Patient réinitialisé!")
         else:
-            response = requests.post(url, data=patient_data)
-        
-        print(f"📡 Status code: {response.status_code}")
-        
-        if response.ok:
-            data = response.json()
-            print("\n✅ Patient créé avec succès!")
-            print(json.dumps(data, indent=2, ensure_ascii=False))
-            
-            print(f"\n🔍 Informations importantes:")
-            print(f"   Patient ID: {data.get('patient_id')}")
-            print(f"   Nom complet: {data.get('first_name')} {data.get('last_name')}")
-            
-            if data.get('documents'):
-                print(f"   Documents: {len(data['documents'])} uploadés")
-                for doc in data['documents']:
-                    print(f"     - {doc.get('filename')} [{doc.get('status')}]")
-            
-            print(f"\n📊 URL de suivi:")
-            print(f"   {base_url}/api/patients/{data.get('patient_id')}/indexing-status/")
-            
-            return data
-        else:
-            print(f"\n❌ Erreur: {response.status_code}")
-            print(response.text)
-            
-    except Exception as e:
-        print(f"\n❌ Erreur: {e}")
-    finally:
-        # Nettoyer les fichiers de test
-        for f in ["ordonnance_test.pdf", "analyse_test.pdf", "test_document.txt", "test_document.pdf"]:
-            if os.path.exists(f):
-                os.remove(f)
-
-def main():
-    """Point d'entrée principal"""
-    import argparse
+            return
+    else:
+        # Créer un nouveau patient
+        patient = Patient.objects.create(
+            first_name=first_name,
+            last_name=last_name,
+            phone=phone,
+            gender='M'  # Par défaut
+        )
+        print("✅ Patient créé!")
     
-    parser = argparse.ArgumentParser(description="Créer un patient de test")
-    parser.add_argument("--url", default="http://localhost:8000", help="URL de base de l'API")
-    parser.add_argument("--no-docs", action="store_true", help="Créer sans documents")
-    parser.add_argument("--monitor", action="store_true", help="Monitorer l'indexation après création")
+    print(f"\n📋 Informations du patient:")
+    print(f"  - ID: {patient.id}")
+    print(f"  - Nom: {patient.full_name()}")
+    print(f"  - Téléphone: {patient.phone}")
+    print(f"  - Token: {patient.activation_token}")
+    print(f"  - Actif: {'Oui' if patient.is_active else 'Non'}")
     
-    args = parser.parse_args()
+    # Proposer d'envoyer le SMS
+    response = input("\n📱 Voulez-vous envoyer le SMS d'activation ? (oui/non): ")
+    if response.lower() in ['oui', 'o', 'yes', 'y']:
+        try:
+            sms_service = SMSService()
+            success, result = sms_service.send_activation_sms(patient)
+            if success:
+                print("✅ SMS envoyé avec succès!")
+            else:
+                print(f"❌ Erreur envoi SMS: {result}")
+        except Exception as e:
+            print(f"❌ Erreur: {e}")
     
-    # Créer le patient
-    result = create_test_patient(args.url, not args.no_docs)
+    # Message de test pour WhatsApp
+    print(f"\n💬 Message de test pour WhatsApp:")
+    print(f"ACTIVER {patient.activation_token}")
     
-    # Monitorer si demandé
-    if result and args.monitor and result.get('patient_id'):
-        print("\n📊 Monitoring de l'indexation...")
-        os.system(f"python scripts/test_indexing_status.py monitor {result['patient_id']}")
+    print(f"\n🔗 Lien d'activation:")
+    from django.conf import settings
+    print(f"{settings.SITE_PUBLIC_URL}/api/patients/activate/{patient.activation_token}/")
 
 if __name__ == "__main__":
-    main()
+    create_test_patient()

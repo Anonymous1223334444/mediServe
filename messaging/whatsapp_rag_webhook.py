@@ -1,5 +1,5 @@
 # messaging/whatsapp_rag_webhook.py
-# Webhook WhatsApp avec intégration RAG complète
+# Webhook WhatsApp avec intégration RAG complète et logging amélioré
 
 import os
 import sys
@@ -12,6 +12,7 @@ from django.views.decorators.http import require_POST
 from twilio.twiml.messaging_response import MessagingResponse
 from django.conf import settings
 from django.utils import timezone
+import json
 
 # Ajouter le chemin pour les scripts
 sys.path.append(os.path.join(settings.BASE_DIR, 'scripts'))
@@ -19,6 +20,7 @@ sys.path.append(os.path.join(settings.BASE_DIR, 'scripts'))
 from patients.models import Patient
 from documents.models import DocumentUpload
 from sessions.models import WhatsAppSession, ConversationLog
+from messaging.utils import normalize_phone_number, phones_match
 
 logger = logging.getLogger(__name__)
 
@@ -28,32 +30,76 @@ def whatsapp_rag_webhook(request):
     """Webhook WhatsApp avec RAG intégré"""
     start_time = time.time()
     
+    # Logger toutes les données reçues pour debug
+    logger.info("="*50)
+    logger.info("📱 WEBHOOK TWILIO APPELÉ")
+    logger.info(f"Method: {request.method}")
+    logger.info(f"Headers: {dict(request.headers)}")
+    logger.info(f"POST data: {dict(request.POST)}")
+    logger.info(f"Body: {request.body.decode('utf-8', errors='ignore')[:500]}")  # Premiers 500 chars
+    logger.info("="*50)
+    
     try:
-        # 1. Extraire les données du message
+        # 1. Extraire les données du message - Twilio envoie en POST form-encoded
         from_number = request.POST.get('From', '').replace('whatsapp:', '').replace(' ', '')
         message_body = request.POST.get('Body', '').strip()
         message_sid = request.POST.get('MessageSid', '')
         
-        logger.info(f"📱 Message reçu de {from_number}: {message_body}")
+        logger.info(f"📱 From: {from_number}")
+        logger.info(f"📱 Body: {message_body}")
+        logger.info(f"📱 MessageSid: {message_sid}")
         
         # 2. Préparer la réponse Twilio
         resp = MessagingResponse()
         
         # 3. Traiter le message d'activation
         if message_body.upper().startswith('ACTIVER '):
+            logger.info("🔑 Message d'activation détecté")
             response_text = handle_activation(from_number, message_body)
             resp.message(response_text)
+            logger.info(f"✅ Réponse d'activation envoyée")
             return HttpResponse(str(resp), content_type='text/xml')
         
         # 4. Vérifier que le patient existe et est actif
         try:
-            patient = Patient.objects.get(phone=from_number)
+            # Normaliser le numéro d'abord
+            normalized_from = normalize_phone_number(from_number)
+            logger.info(f"🔍 Recherche du patient avec numéro normalisé: {normalized_from}")
+            
+            # Recherche flexible du patient
+            patient = None
+            
+            # 1. Recherche exacte
+            try:
+                patient = Patient.objects.get(phone=normalized_from)
+                logger.info(f"✅ Patient trouvé par recherche exacte")
+            except Patient.DoesNotExist:
+                # 2. Recherche avec comparaison flexible
+                all_patients = Patient.objects.all()
+                for p in all_patients:
+                    if phones_match(p.phone, from_number):
+                        patient = p
+                        logger.info(f"✅ Patient trouvé par comparaison flexible: {p.phone} ≈ {from_number}")
+                        break
+            
+            if not patient:
+                raise Patient.DoesNotExist()
+            
+            logger.info(f"👤 Patient trouvé: {patient.full_name()} (ID: {patient.id})")
             
             if not patient.is_active:
+                logger.warning(f"⚠️ Patient non actif: {patient.id}")
                 resp.message(f"❌ Veuillez d'abord activer votre compte.\n\nEnvoyez : ACTIVER {patient.activation_token}")
                 return HttpResponse(str(resp), content_type='text/xml')
             
         except Patient.DoesNotExist:
+            logger.error(f"❌ Patient non trouvé pour le numéro: {from_number} (normalisé: {normalized_from})")
+            
+            # Logger tous les numéros de patients pour debug
+            logger.debug("📱 Numéros de patients dans la DB:")
+            for p in Patient.objects.all()[:10]:  # Limiter à 10 pour les logs
+                logger.debug(f"  - {p.phone} ({p.full_name()})")
+            
             resp.message("❌ Numéro non reconnu. Veuillez contacter votre médecin pour vous inscrire.")
             return HttpResponse(str(resp), content_type='text/xml')
         
@@ -71,6 +117,8 @@ def whatsapp_rag_webhook(request):
         session.last_activity = timezone.now()
         session.save()
         
+        logger.info(f"💬 Session {'créée' if created else 'récupérée'}: {session.session_id}")
+        
         # 6. Utiliser le RAG pour générer la réponse
         try:
             response_text = process_with_rag(patient, message_body, session)
@@ -86,8 +134,10 @@ def whatsapp_rag_webhook(request):
                 response_length=len(response_text)
             )
             
+            logger.info(f"✅ Réponse générée en {response_time_ms:.0f}ms")
+            
         except Exception as e:
-            logger.error(f"Erreur RAG pour patient {patient.id}: {e}", exc_info=True)
+            logger.error(f"❌ Erreur RAG pour patient {patient.id}: {e}", exc_info=True)
             response_text = (
                 "😔 Désolé, je n'ai pas pu traiter votre demande pour le moment.\n\n"
                 "Vous pouvez:\n"
@@ -98,10 +148,11 @@ def whatsapp_rag_webhook(request):
         
         # 8. Envoyer la réponse
         resp.message(response_text)
+        logger.info("✅ Réponse envoyée à Twilio")
         return HttpResponse(str(resp), content_type='text/xml')
         
     except Exception as e:
-        logger.error(f"Erreur webhook: {e}", exc_info=True)
+        logger.error(f"❌ Erreur webhook: {e}", exc_info=True)
         resp = MessagingResponse()
         resp.message("⚠️ Une erreur technique s'est produite. Veuillez réessayer.")
         return HttpResponse(str(resp), content_type='text/xml')
@@ -110,27 +161,42 @@ def whatsapp_rag_webhook(request):
 def handle_activation(from_number, message_body):
     """Gère l'activation du patient"""
     try:
-        # Extraire le token
-        token_match = re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 
-                               message_body, re.IGNORECASE)
+        logger.info(f"🔑 Traitement activation pour {from_number}")
         
-        if not token_match:
+        # Extraire le token - plus flexible
+        # Le token peut être après "ACTIVER " ou juste le UUID
+        parts = message_body.split()
+        token = None
+        
+        # Chercher un UUID dans le message
+        uuid_pattern = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+        matches = re.findall(uuid_pattern, message_body, re.IGNORECASE)
+        
+        if matches:
+            token = matches[0]
+            logger.info(f"🔑 Token extrait: {token}")
+        else:
+            logger.error("❌ Aucun token UUID trouvé dans le message")
             return "❌ Format invalide. Copiez le message complet depuis votre SMS."
         
-        token = token_match.group(0)
+        # Rechercher le patient par token
         patient = Patient.objects.get(activation_token=token)
+        logger.info(f"👤 Patient trouvé par token: {patient.full_name()}")
         
         # Vérifier que le numéro correspond
-        if patient.phone.replace(' ', '') != from_number:
+        if not phones_match(patient.phone, from_number):
+            logger.error(f"❌ Numéro non correspondant. Patient: {patient.phone}, From: {from_number}")
             return "❌ Ce lien d'activation ne correspond pas à votre numéro."
         
         if patient.is_active:
+            logger.info("✅ Patient déjà actif")
             return f"✅ {patient.first_name}, votre compte est déjà activé ! Comment puis-je vous aider ?"
         
         # Activer le patient
         patient.is_active = True
         patient.activated_at = timezone.now()
         patient.save()
+        logger.info(f"✅ Patient activé: {patient.id}")
         
         # Vérifier les documents
         doc_count = DocumentUpload.objects.filter(
@@ -140,7 +206,7 @@ def handle_activation(from_number, message_body):
         
         return f"""✅ Bienvenue {patient.first_name} !
 
-Votre espace santé CARE est maintenant actif.
+Votre espace santé {settings.HEALTH_STRUCTURE_NAME} est maintenant actif.
 
 {'📄 ' + str(doc_count) + ' document(s) médical(aux) disponible(s)' if doc_count > 0 else '📭 Aucun document pour le moment'}
 
@@ -153,15 +219,28 @@ Je suis votre assistant médical personnel. Je peux vous aider avec :
 Comment puis-je vous aider aujourd'hui ?"""
         
     except Patient.DoesNotExist:
+        logger.error(f"❌ Patient non trouvé pour token: {token}")
         return "❌ Token d'activation invalide. Veuillez vérifier votre SMS."
     except Exception as e:
-        logger.error(f"Erreur activation: {e}")
+        logger.error(f"❌ Erreur activation: {e}", exc_info=True)
         return "❌ Erreur lors de l'activation. Veuillez contacter le support."
 
 
 def process_with_rag(patient, query, session):
     """Traite la question avec le système RAG"""
     try:
+        logger.info(f"🤖 Traitement RAG pour patient {patient.id} - {patient.full_name()}")
+        logger.info(f"📝 Question: {query}")
+        
+        # Vérifier d'abord les documents indexés
+        indexed_docs = DocumentUpload.objects.filter(
+            patient=patient,
+            upload_status='indexed'
+        )
+        logger.info(f"📚 Documents indexés pour ce patient: {indexed_docs.count()}")
+        for doc in indexed_docs:
+            logger.info(f"  - {doc.original_filename} (ID: {doc.id})")
+        
         # Importer les modules RAG
         from rag.your_rag_module import (
             VectorStoreHDF5, EmbeddingGenerator, 
@@ -174,13 +253,19 @@ def process_with_rag(patient, query, session):
         faiss_path = os.path.join(vector_dir, 'vector_store.faiss')
         bm25_dir = os.path.join(settings.MEDIA_ROOT, 'indexes', f'patient_{patient.id}_bm25')
         
+        logger.info(f"📁 Recherche vector store: {hdf5_path}")
+        logger.info(f"📁 Existe? {os.path.exists(hdf5_path)}")
+        
         # Vérifier l'existence des fichiers
         if not os.path.exists(hdf5_path):
-            logger.warning(f"Pas de vector store pour patient {patient.id}")
+            logger.warning(f"⚠️ Pas de vector store pour patient {patient.id}")
+            if indexed_docs.count() > 0:
+                logger.error("❌ Documents marqués comme indexés mais pas de vector store!")
+                return "⚠️ Vos documents sont en cours de traitement. Veuillez réessayer dans quelques instants."
             return fallback_response(patient, query)
         
         # 1. Charger le vector store
-        logger.info(f"Chargement du vector store: {hdf5_path}")
+        logger.info(f"📚 Chargement du vector store")
         vector_store = VectorStoreHDF5(hdf5_path)
         vector_store.load_store()
         
@@ -189,7 +274,7 @@ def process_with_rag(patient, query, session):
         
         # 3. Créer le retriever
         if os.path.exists(bm25_dir) and settings.RAG_SETTINGS.get('USE_BM25', True):
-            logger.info("Utilisation du retriever hybride (dense + BM25)")
+            logger.info("🔍 Utilisation du retriever hybride (dense + BM25)")
             retriever = HybridRetriever(vector_store, embedder, bm25_dir)
             
             # Activer le reranking si configuré
@@ -197,7 +282,7 @@ def process_with_rag(patient, query, session):
                 reranker_model = settings.RAG_SETTINGS.get('RERANKER_MODEL', 'cross-encoder/ms-marco-MiniLM-L-6-v2')
                 retriever.enable_reranking(reranker_model)
         else:
-            logger.info("Utilisation du retriever dense uniquement")
+            logger.info("🔍 Utilisation du retriever dense uniquement")
             retriever = HybridRetriever(vector_store, embedder)
         
         # 4. Initialiser le LLM
@@ -211,25 +296,29 @@ def process_with_rag(patient, query, session):
         Patient: {patient.first_name} {patient.last_name}
         Question: {query}
         
-        Instructions:
-        - Répondre en français de manière claire et empathique
-        - Utiliser des emojis appropriés pour WhatsApp
+        Instructions pour l'assistant médical:
+        - Répondre en français de manière claire, empathique et professionnelle
+        - Utiliser des emojis appropriés pour WhatsApp (🏥 💊 🔬 📋 ✅ etc.)
         - Limiter la réponse à 300 mots maximum
+        - Utiliser un langage simple et accessible
         - Si l'information n'est pas dans les documents, le dire clairement
-        - Toujours suggérer de consulter le médecin pour des décisions importantes
+        - Toujours rappeler que pour des décisions médicales importantes, il faut consulter le médecin
+        - Éviter le jargon médical complexe
+        - Être rassurant tout en restant factuel
         """
         
         # 7. Obtenir la réponse
-        logger.info(f"Génération de la réponse RAG pour: {query}")
+        logger.info(f"💭 Génération de la réponse RAG")
         response = rag.answer(enhanced_query, top_k=5)
         
         # 8. Post-traiter la réponse
         response = post_process_response(response, patient)
         
+        logger.info("✅ Réponse RAG générée avec succès")
         return response
         
     except Exception as e:
-        logger.error(f"Erreur RAG: {e}", exc_info=True)
+        logger.error(f"❌ Erreur RAG: {e}", exc_info=True)
         return fallback_response(patient, query)
 
 
@@ -285,8 +374,3 @@ def post_process_response(response, patient):
         response = "Je n'ai pas pu générer une réponse. Veuillez reformuler votre question."
     
     return response + footer
-
-
-# Dans mediServe/urls.py, ajouter :
-# from messaging.whatsapp_rag_webhook import whatsapp_rag_webhook
-# path('api/webhook/twilio/', whatsapp_rag_webhook, name='twilio-webhook'),

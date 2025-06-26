@@ -1,10 +1,6 @@
 import requests
 from django.conf import settings
 import logging
-
-logger = logging.getLogger(__name__)
-
-# messaging/services.py - Ajouter cette classe
 from twilio.rest import Client
 
 logger = logging.getLogger(__name__)
@@ -17,7 +13,8 @@ class SMSService:
             settings.TWILIO_ACCOUNT_SID,
             settings.TWILIO_AUTH_TOKEN
         )
-        self.from_number = settings.TWILIO_WHATSAPP_NUMBER
+        # Utiliser le numéro SMS, pas le numéro WhatsApp !
+        self.from_number = settings.TWILIO_SMS_NUMBER
     
     def send_activation_sms(self, patient):
         """Envoie un SMS d'activation au patient"""
@@ -26,12 +23,13 @@ class SMSService:
             activation_url = f"{settings.SITE_PUBLIC_URL}/api/patients/activate/{patient.activation_token}/"
             
             # Message en français avec instructions claires
-            message = f"""Bonjour {patient.first_name},activez votre accès WhatsApp santé ici:{activation_url}"""
+            message = f"""Bonjour {patient.first_name},activez votre accès WhatsApp santé ici:{activation_url}
+{settings.HEALTH_STRUCTURE_NAME}"""
             
             # Envoyer le SMS
             sms = self.client.messages.create(
                 body=message,
-                from_=self.from_number.replace('whatsapp:', ''),
+                from_=self.from_number,  # Numéro SMS
                 to=patient.phone
             )
             
@@ -46,22 +44,20 @@ class SMSService:
     def send_indexing_complete_sms(self, patient, doc_count):
         """Envoie un SMS quand l'indexation est terminée"""
         try:
-            message = f"""
-                Bonjour {patient.first_name},
+            message = f"""Bonjour {patient.first_name},
 
-                Vos {doc_count} documents médicaux ont été traités avec succès.
+Vos {doc_count} documents médicaux ont été traités avec succès.
 
-                Vous pouvez maintenant poser des questions sur vos documents via WhatsApp.
+Vous pouvez maintenant poser des questions sur vos documents via WhatsApp.
 
-                Si vous n'avez pas encore activé votre compte, utilisez le lien d'activation envoyé précédemment.
+Si vous n'avez pas encore activé votre compte, utilisez le lien d'activation envoyé précédemment.
 
-                Cordialement,
-                L'équipe médicale
-            """.strip()
+Cordialement,
+{settings.HEALTH_STRUCTURE_NAME}"""
             
             sms = self.client.messages.create(
                 body=message,
-                from_=self.from_number.replace('whatsapp:', ''),
+                from_=self.from_number,  # Numéro SMS
                 to=patient.phone
             )
             
@@ -77,6 +73,7 @@ class WhatsAppService:
     def __init__(self):
         self.account_sid = settings.TWILIO_ACCOUNT_SID
         self.auth_token = settings.TWILIO_AUTH_TOKEN
+        # Utiliser le numéro WhatsApp Sandbox
         self.whatsapp_number = settings.TWILIO_WHATSAPP_NUMBER
         
     def send_message(self, to_number: str, message: str) -> bool:
@@ -101,10 +98,10 @@ class WhatsAppService:
             )
             
             if response.status_code == 201:
-                logger.info(f"Message envoyé à {to_number}")
+                logger.info(f"Message WhatsApp envoyé à {to_number}")
                 return True
             else:
-                logger.error(f"Échec envoi à {to_number}: {response.text}")
+                logger.error(f"Échec envoi WhatsApp à {to_number}: {response.text}")
                 return False
                 
         except Exception as e:

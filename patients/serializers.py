@@ -70,6 +70,7 @@ class PatientCreateSerializer(serializers.ModelSerializer):
                     # Formater le numéro au format E.164
                     formatted_number = phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.E164)
                     logger.info(f"Numéro formaté final: {formatted_number}")
+                    formatted_number = formatted_number.replace(' ', '')
                     return formatted_number
                     
                 except phonenumbers.NumberParseException as e:

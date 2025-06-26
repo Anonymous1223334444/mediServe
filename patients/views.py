@@ -489,11 +489,13 @@ class DocumentIndexingStatusView(views.APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+from django.shortcuts import render
+from django.template.response import TemplateResponse
 
 class ActivateRedirectView(View):
     """
     GET /api/patients/activate/<uuid:token>/
-    Redirige vers WhatsApp avec le message d'activation incluant le token
+    Affiche un guide d'activation en deux étapes
     """
     def get(self, request, token=None):
         try:
@@ -505,28 +507,37 @@ class ActivateRedirectView(View):
                 patient.activation_link_clicked = True
                 patient.save(update_fields=['activation_link_clicked'])
             
-            # 3. Construire le message avec le token
+            # 3. Préparer les données pour le template
             whatsapp_number = settings.TWILIO_WHATSAPP_NUMBER.replace('whatsapp:', '').lstrip('+')
             
-            # Message avec le token pour l'activation automatique
-            message = f"ACTIVER {token}"
+            # URLs WhatsApp
+            sandbox_message = "join fur-asleep"
+            activation_message = f"ACTIVER {token}"
             
-            # 4. Créer l'URL WhatsApp
-            params = {
-                "phone": whatsapp_number,
-                "text": message
+            sandbox_url = f"https://api.whatsapp.com/send?phone={whatsapp_number}&text={urllib.parse.quote(sandbox_message)}"
+            activation_url = f"https://api.whatsapp.com/send?phone={whatsapp_number}&text={urllib.parse.quote(activation_message)}"
+            
+            context = {
+                'patient_name': patient.first_name,
+                'token': str(token),
+                'sandbox_url': sandbox_url,
+                'activation_url': activation_url,
+                'health_structure_name': settings.HEALTH_STRUCTURE_NAME,
+                'whatsapp_number': whatsapp_number
             }
             
-            encoded_params = urllib.parse.urlencode(params)
-            whatsapp_url = f"https://api.whatsapp.com/send?{encoded_params}"
+            logger.info(f"Affichage du guide d'activation pour patient {patient.id}")
             
-            logger.info(f"Redirection WhatsApp pour patient {patient.id} avec token {token}")
-            
-            # 5. Rediriger vers WhatsApp
-            return HttpResponseRedirect(whatsapp_url)
+            # 4. Retourner le template HTML
+            return render(request, 'activation_guide.html', context)
             
         except Patient.DoesNotExist:
-            return HttpResponseBadRequest("Lien d'activation invalide ou expiré.")
+            # Template d'erreur simple
+            return render(request, 'activation_error.html', {
+                'error': "Lien d'activation invalide ou expiré."
+            }, status=404)
         except Exception as e:
             logger.error(f"Erreur activation: {e}")
-            return HttpResponseBadRequest(f"Erreur lors de l'activation: {str(e)}")
+            return render(request, 'activation_error.html', {
+                'error': f"Erreur lors de l'activation: {str(e)}"
+            }, status=500)

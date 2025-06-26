@@ -28,7 +28,8 @@ N8N_BASE_URL = os.getenv("http://localhost:5678", "http://localhost:5678")
 N8N_API_KEY   = os.getenv("N8N_API_KEY", None)
 
 # Your Twilio WhatsApp number in E.164 format (e.g. "+1415XXXXXXX")
-TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", None)
+TWILIO_WHATSAPP_NUMBER = os.getenv('TWILIO_WHATSAPP_NUMBER', '+14155238886')
+TWILIO_SMS_NUMBER = os.getenv('TWILIO_SMS_NUMBER', '+16065955879')
 
 SITE_PUBLIC_URL = os.getenv("https://orca-eternal-specially.ngrok-free.app", "https://orca-eternal-specially.ngrok-free.app")
 
@@ -42,7 +43,7 @@ TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_VERIFY_SID = os.getenv('TWILIO_VERIFY_SID')
 TWILIO_WHATSAPP_NUMBER = os.getenv('TWILIO_WHATSAPP_NUMBER')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', "AIzaSyDL3MPOYAY343tajdd8mwQSPgUDBQVo0uk")
 HEALTH_STRUCTURE_NAME = os.getenv('HEALTH_STRUCTURE_NAME', 'Centre Médical Dalal Diam')
 WHATSAPP_BUSINESS_PHONE_ID = os.getenv('611149155424921')
 WHATSAPP_BUSINESS_TOKEN = os.getenv('EAAZAhIoyGpUgBOZBeigSXXkzTd09ahZBrORIk2biIUs3J1oT9YBka297fS6KOSYQI0jdsOf1X74YzqKVI8KLuZBjyJZCJJZB7E78ZB26gKjUvqvuMDHoMZCfkdNYDl7QPD1PkjoZCdTx6Nywvw3p7yxSIIabm1DB7rgSIp8j7JxZBkQasaFlOX5fJ7OJtZBRcy2bYSlg8sKMLK7DZAhyRBYSguZAVhBFxRrI82gGxMx2QhPyPJTv0ZBBoL')
@@ -250,7 +251,9 @@ ROOT_URLCONF = 'mediServe.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [
+            os.path.join(BASE_DIR, 'templates'),
+        ],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [

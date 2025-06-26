@@ -28,7 +28,9 @@ load_dotenv()
 class VectorStoreHDF5:
     def __init__(self, path: str):
         self.path = path
-        self.faiss_path = f"{path}.faiss"
+        # CORRECTION: Le chemin FAISS doit être basé sur le dossier, pas sur le fichier HDF5
+        base_dir = os.path.dirname(path)
+        self.faiss_path = os.path.join(base_dir, 'vector_store.faiss')
         self.index: Optional[faiss.Index] = None
         self.vectors: Optional[np.ndarray] = None
         self.meta: List[Dict] = []
@@ -37,6 +39,9 @@ class VectorStoreHDF5:
 
     def load_store(self):
         # Load HDF5 vectors and metadata
+        if not os.path.exists(self.path):
+            raise FileNotFoundError(f"HDF5 file not found at {self.path}")
+            
         with h5py.File(self.path, 'r') as hf:
             self.vectors = hf['vectors'][:]
             raw = hf['metadata'][:]
@@ -51,12 +56,24 @@ class VectorStoreHDF5:
                 self.meta.append(m)
         # Build id->meta map
         self.id_map = {m['id']: m for m in self.meta}
+        
         # Load FAISS index
         if os.path.exists(self.faiss_path):
             self.index = faiss.read_index(self.faiss_path)
             self.logger.info(f"Loaded FAISS index from {self.faiss_path}")
         else:
-            raise FileNotFoundError(f"FAISS index not found at {self.faiss_path}")
+            # Si le fichier FAISS n'existe pas, le créer à partir des vecteurs HDF5
+            self.logger.warning(f"FAISS index not found at {self.faiss_path}, creating from HDF5 vectors...")
+            if self.vectors is not None and len(self.vectors) > 0:
+                dim = self.vectors.shape[1]
+                self.index = faiss.IndexFlatIP(dim)
+                vectors_copy = self.vectors.copy()
+                faiss.normalize_L2(vectors_copy)
+                self.index.add(vectors_copy)
+                faiss.write_index(self.index, self.faiss_path)
+                self.logger.info(f"Created and saved FAISS index with {self.index.ntotal} vectors")
+            else:
+                raise ValueError("No vectors found in HDF5 file to create FAISS index")
 
     def search(self, query_vec: np.ndarray, top_k: int = 5) -> List[Tuple[int, float]]:
         if self.index is None:
@@ -128,7 +145,8 @@ class HybridRetriever:
         self.store = store
         self.embedder = embedder
         self.bm25_idx = init_bm25_index(bm25_index_dir) if bm25_index_dir else None
-        self.qp = QueryParser("content", schema=self.bm25_idx.schema)
+        if self.bm25_idx:
+            self.qp = QueryParser("content", schema=self.bm25_idx.schema)
         self.cross_encoder: Optional[CrossEncoder] = None
 
     def _build_query(self, question: str):
@@ -152,25 +170,12 @@ class HybridRetriever:
         # BM-25 retrieval (optional)
         bm25_hits = []
         if self.bm25_idx:
-            print("⇢ BM25 docs in index:", self.bm25_idx.doc_count())
             query = self._build_query(question)
             if query is not None:
                 with self.bm25_idx.searcher(weighting=scoring.BM25F()) as searcher:
                     res = searcher.search(query, limit=bm25_k)
                     bm25_hits = [(hit["id"], hit.score) for hit in res]
-                    for mid, _ in bm25_hits:
-                        if mid not in self.store.id_map:
-                            print("⚠️  ID mismatch →", mid[:80])
-        # BM25 retrieval
-        bm25_hits = []
-        if self.bm25_idx:
-            query = self._build_query(question)
-            if query is not None:
-                bm25_hits = []
-                if query is not None:
-                    with self.bm25_idx.searcher(weighting=scoring.BM25F()) as searcher:
-                        res = searcher.search(query, limit=bm25_k)
-                        bm25_hits = [(hit['id'], hit.score) for hit in res]
+                    
         # Combine
         combined = {}
         for idx, score in dense_hits:
@@ -182,6 +187,7 @@ class HybridRetriever:
                 combined[mid]['bm25'] = score
             elif mid in self.store.id_map:
                 combined[mid] = {'meta': self.store.id_map[mid].copy(), 'dense': 0.0, 'bm25': score}
+                
         max_d = max((v['dense'] for v in combined.values()), default=1.0)
         if max_d == 0.0:
             logging.warning("All dense scores are zero → skipping dense normalization")
@@ -191,9 +197,12 @@ class HybridRetriever:
         if max_b == 0.0:
             logging.warning("All BM25 scores are zero → skipping BM25 normalization")
             max_b = 1.0
+            
         for v in combined.values():
             v['score'] = alpha*(v['dense']/max_d) + (1-alpha)*(v['bm25']/max_b)
+            
         items = sorted(combined.values(), key=lambda x: x['score'], reverse=True)
+        
         # Rerank
         if self.cross_encoder:
             pairs = [(question, item['meta'].get('text','')) for item in items[:top_k*2]]
@@ -201,6 +210,7 @@ class HybridRetriever:
             for item, rs in zip(items[:top_k*2], rerank_scores):
                 item['score'] = float(rs)
             items = sorted(items, key=lambda x: x['score'], reverse=True)
+            
         # Top-k
         results = []
         for item in items[:top_k]:
@@ -221,7 +231,13 @@ class GeminiLLM:
             raise EnvironmentError("GEMINI_API_KEY non défini")
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name)
-        self.config = genai.types.GenerationConfig(temperature=0.0)
+        # Configuration pour des réponses médicales plus naturelles
+        self.config = genai.types.GenerationConfig(
+            temperature=0.3,  # Un peu plus de variabilité pour des réponses naturelles
+            top_p=0.9,
+            top_k=40,
+            max_output_tokens=500,  # Limiter la longueur pour WhatsApp
+        )
 
     def generate(self, prompt: str) -> str:
         # Respect API rate limits
@@ -240,17 +256,28 @@ class RAG:
     def answer(self, question: str, top_k: int = 3) -> str:
         contexts = self.retriever.retrieve(question, top_k)
         prompt = (
-            "Tu es un assistant spécialisé en données statistiques. "
-            "Utilise les extraits suivants pour répondre à la question.\n"
-            "Inclue des données numériques si pertinent.\n\n"
-            "Contexte :\n"
+            "Tu es un assistant médical intelligent qui aide les patients à comprendre leurs documents médicaux. "
+            "Utilise les extraits suivants pour répondre à la question de manière claire et empathique.\n"
+            "Important: Base-toi uniquement sur les informations fournies dans les documents.\n"
+            "Si l'information n'est pas disponible, dis-le clairement.\n\n"
+            "Contexte médical :\n"
         )
         for ctx in contexts:
             text = ctx.get('original_text',
                         ctx.get('text',
                                 ctx.get('text_representation','')))
-            prompt += f"- ({ctx.get('type','text')} p.{ctx.get('page','?')}): {text}\n"
-        prompt += f"\nQuestion : {question}\nRéponse :"
+            doc_type = ctx.get('type', 'document')
+            page = ctx.get('page', '?')
+            file_name = ctx.get('file_name', 'Document')
+            
+            prompt += f"- {file_name} ({doc_type}, page {page}): {text[:500]}...\n"
+            
+        prompt += f"\nQuestion du patient : {question}\n"
+        prompt += "\nRéponds de manière claire, empathique et professionnelle. "
+        prompt += "Utilise des termes simples et évite le jargon médical complexe. "
+        prompt += "Si nécessaire, suggère de consulter le médecin pour plus de précisions.\n"
+        prompt += "\nRéponse :"
+        
         # Respect API rate limits
         time.sleep(0.5)
         return self.llm.generate(prompt)
