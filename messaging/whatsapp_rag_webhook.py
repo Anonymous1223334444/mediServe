@@ -149,6 +149,7 @@ def whatsapp_rag_webhook(request):
         # 8. Envoyer la réponse
         resp.message(response_text)
         logger.info("✅ Réponse envoyée à Twilio")
+        logger.info(f"XML envoyé: {str(resp)}")
         return HttpResponse(str(resp), content_type='text/xml')
         
     except Exception as e:

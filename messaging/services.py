@@ -23,7 +23,7 @@ class SMSService:
             activation_url = f"{settings.SITE_PUBLIC_URL}/api/patients/activate/{patient.activation_token}/"
             
             # Message en français avec instructions claires
-            message = f"""Bonjour {patient.first_name},activez votre accès WhatsApp santé ici:{activation_url}
+            message = f"""Bonjour {patient.first_name},{activation_url}
 {settings.HEALTH_STRUCTURE_NAME}"""
             
             # Envoyer le SMS
